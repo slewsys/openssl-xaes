@@ -1,0 +1,9 @@
+/* openssl-xaes.c: Entry point for openssl-xaes file-encryption utility.
+ *
+ * SPDX-License-Identifier: CC-BY-4.0
+ */
+#include <openssl/opensslv.h>
+
+#define OPENSSL_XAES_VERSION "@VERSION@"
+#define OPENSSL_XAES_VERSION_STRING "openssl-xaes " OPENSSL_XAES_VERSION "\n" \
+  OPENSSL_VERSION_TEXT "\n"

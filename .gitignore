@@ -1,0 +1,12 @@
+/GPATH
+/GRTAGS
+/GTAGS
+/openssl*/
+/openssl-xaes
+/xaes-test
+/version.h
+/#*#
+/.#*
+/*~
+/*.tmp
+/testsuite/xaes-test
