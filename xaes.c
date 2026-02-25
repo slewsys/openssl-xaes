@@ -9,6 +9,8 @@
 
 #include <string.h>
 
+#include "xaes.h"
+
 #define utf8_str_new(key, buf_p, bufsiz)                  \
   OSSL_PARAM_construct_utf8_string (key, buf_p, bufsiz)
 #define int_new(key, val_p)                               \
@@ -27,8 +29,8 @@
  */
 int
 derive_xaes_key (const unsigned char *pwd,
-                 const unsigned char salt[16],
-                 unsigned char out[32])
+                 const unsigned char salt[ARGON2_SALT_SIZE],
+                 unsigned char out[ARGON2_TAG_SIZE])
 {
   /*
    * Per RFC 9106, Section 4, Parameter Choice. Select, in order of
@@ -44,6 +46,7 @@ derive_xaes_key (const unsigned char *pwd,
    *
    * ¹https://arxiv.org/pdf/2504.17121
    */
+  size_t pwd_len = strlen ((char *) pwd);
   uint32_t threads = 1;
   uint32_t iter = 3;
   uint32_t lanes = 4;
@@ -56,8 +59,8 @@ derive_xaes_key (const unsigned char *pwd,
       uint32_new (OSSL_KDF_PARAM_THREADS, &threads),
       uint32_new (OSSL_KDF_PARAM_ARGON2_LANES, &lanes),
       uint32_new (OSSL_KDF_PARAM_EARLY_CLEAN, &early_clean),
-      octet_str_new (OSSL_KDF_PARAM_SALT, (void *) salt, 32),
-      octet_str_new (OSSL_KDF_PARAM_PASSWORD, (void *) pwd, strlen ((char *) pwd)),
+      octet_str_new (OSSL_KDF_PARAM_SALT, (void *) salt, ARGON2_SALT_SIZE),
+      octet_str_new (OSSL_KDF_PARAM_PASSWORD, (void *) pwd, pwd_len),
       OSSL_PARAM_construct_end ()
     };
   EVP_KDF *kdf = NULL;
@@ -71,7 +74,7 @@ derive_xaes_key (const unsigned char *pwd,
       EVP_KDF_free (kdf);
       return 0;
     }
-  status = EVP_KDF_derive (ctx, out, 32, params);
+  status = EVP_KDF_derive (ctx, out, ARGON2_TAG_SIZE, params);
   EVP_KDF_free (kdf);
   EVP_KDF_CTX_free (ctx);
   return status;
@@ -83,12 +86,13 @@ derive_xaes_key (const unsigned char *pwd,
  *     root key. Returns 0 on failure, and 1 on success.
  */
 int
-derive_aes_key (const unsigned char key[32],
-                const unsigned char nonce[24],
-                unsigned char out[32])
+derive_aes_key (const unsigned char key[XAES_KEY_SIZE],
+                const unsigned char nonce[XAES_NONCE_SIZE],
+                unsigned char out[XAES_KEY_SIZE])
 {
-  int use_l = 0;
-  int r = 16;
+  /* Per XAES-256-GCM spec: */
+  int use_l = 0;                /* Omit optional L field. */
+  int r = 16;                   /* 16-bit counter. */
   OSSL_PARAM params[] =
     {
       utf8_str_new (OSSL_KDF_PARAM_CIPHER, "AES256", 0),
@@ -96,9 +100,9 @@ derive_aes_key (const unsigned char key[32],
       utf8_str_new (OSSL_KDF_PARAM_MODE, "COUNTER", 0),
       int_new (OSSL_KDF_PARAM_KBKDF_USE_L, &use_l),
       int_new (OSSL_KDF_PARAM_KBKDF_R, &r),
-      octet_str_new (OSSL_KDF_PARAM_KEY, (void *) key, 32),
+      octet_str_new (OSSL_KDF_PARAM_KEY, (void *) key, XAES_KEY_SIZE),
       octet_str_new (OSSL_KDF_PARAM_SALT, "X", 1),
-      octet_str_new (OSSL_KDF_PARAM_INFO, (void *) nonce, 12),
+      octet_str_new (OSSL_KDF_PARAM_INFO, (void *) nonce, XAES_NONCE_SIZE >> 1),
       OSSL_PARAM_construct_end ()
     };
   EVP_KDF *kdf = NULL;
@@ -112,7 +116,7 @@ derive_aes_key (const unsigned char key[32],
       EVP_KDF_free (kdf);
       return 0;
     }
-  status = EVP_KDF_derive (ctx, out, 32, params);
+  status = EVP_KDF_derive (ctx, out, XAES_KEY_SIZE, params);
   EVP_KDF_free (kdf);
   EVP_KDF_CTX_free (ctx);
   return status;
@@ -130,9 +134,10 @@ derive_aes_key (const unsigned char key[32],
  */
 int
 seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
-                  const unsigned char *aadv[], const unsigned char key[32],
-                  const unsigned char nonce[12], unsigned char **ciphertext,
-                  size_t *ciphertext_len_p)
+                  const unsigned char *aadv[],
+                  const unsigned char key[XAES_KEY_SIZE],
+                  const unsigned char nonce[XAES_NONCE_SIZE >> 1],
+                  unsigned char **ciphertext, size_t *ciphertext_len_p)
 {
   EVP_CIPHER_CTX *ctx = NULL;
   EVP_CIPHER *cipher = NULL;
@@ -199,9 +204,10 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
  */
 int
 open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
-                  const unsigned char *aadv[], const unsigned char key[32],
-                  const unsigned char nonce[12], unsigned char **plaintext,
-                  size_t *plaintext_len_p)
+                  const unsigned char *aadv[],
+                  const unsigned char key[XAES_KEY_SIZE],
+                  const unsigned char nonce[XAES_NONCE_SIZE >> 1],
+                  unsigned char **plaintext, size_t *plaintext_len_p)
 {
   EVP_CIPHER_CTX *ctx = NULL;
   EVP_CIPHER *cipher = NULL;
@@ -269,16 +275,18 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
  */
 int
 seal_xaes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
-                   const unsigned char *aadv[], const unsigned char key[32],
-                   const unsigned char nonce[24], unsigned char **ciphertext,
-                   size_t *ciphertext_len_p)
+                   const unsigned char *aadv[],
+                   const unsigned char key[XAES_KEY_SIZE],
+                   const unsigned char nonce[XAES_NONCE_SIZE],
+                   unsigned char **ciphertext, size_t *ciphertext_len_p)
 {
-  unsigned char derived_key[32];
+  unsigned char derived_key[XAES_KEY_SIZE];
 
   if (!derive_aes_key (key, nonce, derived_key))
     return 0;
-  return seal_aes_256_gcm (plaintext, plaintext_len, aadv,  derived_key,
-                           nonce + 12, ciphertext, ciphertext_len_p);
+  return seal_aes_256_gcm (plaintext, plaintext_len, aadv, derived_key,
+                           nonce + (XAES_NONCE_SIZE >> 1),
+                           ciphertext, ciphertext_len_p);
 }
 
 /*
@@ -290,14 +298,16 @@ seal_xaes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
  */
 int
 open_xaes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
-                   const unsigned char *aadv[], const unsigned char key[32],
-                   const unsigned char nonce[24], unsigned char **plaintext,
-                   size_t *plaintext_len_p)
+                   const unsigned char *aadv[],
+                   const unsigned char key[XAES_KEY_SIZE],
+                   const unsigned char nonce[XAES_NONCE_SIZE],
+                   unsigned char **plaintext, size_t *plaintext_len_p)
 {
-  unsigned char derived_key[32];
+  unsigned char derived_key[XAES_KEY_SIZE];
 
   if (!derive_aes_key (key, nonce, derived_key))
     return 0;
   return open_aes_256_gcm (ciphertext, ciphertext_len, aadv, derived_key,
-                           nonce + 12, plaintext, plaintext_len_p);
+                           nonce + (XAES_NONCE_SIZE >> 1), plaintext,
+                           plaintext_len_p);
 }

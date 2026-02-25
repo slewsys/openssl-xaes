@@ -23,15 +23,10 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "openssl-xaes.h"
+#include "io.h"
+#include "xaes.h"
+#include "version.h"
 
-/*
- * Per NIST SP 800-38D¹, GCM tag size <= 128 bits (16 bytes).
- *
- * ¹https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf,
- *  Section 5.2.1.2 Output Data
- */
-#define GCM_TAG_MAX 16
 
 static int decrypt (const unsigned char *[]);
 static int encrypt (const unsigned char *[]);
@@ -90,16 +85,16 @@ static int
 encrypt (const unsigned char *aadv[])
 {
   unsigned char password[BUFSIZ];
-  unsigned char nonce[24];
-  unsigned char salt[16];
-  unsigned char xaes_key[32];
+  unsigned char salt[ARGON2_SALT_SIZE];
+  unsigned char xaes_key[XAES_KEY_SIZE];
+  unsigned char nonce[XAES_NONCE_SIZE];
   unsigned char *enc = NULL;
   unsigned char *str = NULL;
   size_t str_len = 0;
   size_t enc_len = 0;
 
   if (!read_passphrase ("Password: ", password, BUFSIZ)
-      || RAND_bytes ((unsigned char *) salt, 16) != 1
+      || RAND_bytes ((unsigned char *) salt, ARGON2_SALT_SIZE) != 1
       || !derive_xaes_key (password, salt, xaes_key))
     return 0;
 
@@ -120,11 +115,11 @@ encrypt (const unsigned char *aadv[])
       fprintf (stderr, "Input too large\n");
       return 0;
     }
-  else if (RAND_bytes ((unsigned char *) nonce, 24) != 1
+  else if (RAND_bytes ((unsigned char *) nonce, XAES_NONCE_SIZE) != 1
            || !seal_xaes_256_gcm (str, str_len, aadv, xaes_key, nonce,
                                   &enc, &enc_len)
-           || !write_stream (salt, 16, stdout)
-           || !write_stream (nonce, 24, stdout)
+           || !write_stream (salt, ARGON2_SALT_SIZE, stdout)
+           || !write_stream (nonce, XAES_NONCE_SIZE, stdout)
            || !write_stream (enc, enc_len, stdout))
     return 0;
   OPENSSL_free (enc);
@@ -142,17 +137,17 @@ static int
 decrypt (const unsigned char *aadv[])
 {
   unsigned char password[BUFSIZ];
-  unsigned char nonce[24];
-  unsigned char salt[16];
-  unsigned char xaes_key[32];
+  unsigned char salt[ARGON2_SALT_SIZE];
+  unsigned char xaes_key[XAES_KEY_SIZE];
+  unsigned char nonce[XAES_NONCE_SIZE];
   unsigned char *dec = NULL;
   unsigned char *str = NULL;
   size_t dec_len = 0;
   size_t str_len = 0;
 
   if (!read_passphrase ("Password: ", password, BUFSIZ)
-      || !read_stream (&str, &str_len, 16, stdin)
-      || !memcpy (salt, str, 16)
+      || !read_stream (&str, &str_len, ARGON2_SALT_SIZE, stdin)
+      || !memcpy (salt, str, ARGON2_SALT_SIZE)
       || !derive_xaes_key (password, salt, xaes_key))
     return 0;
 
@@ -164,8 +159,8 @@ decrypt (const unsigned char *aadv[])
   memset (password, 0, strlen ((char *) password));
 #endif
 
-  if (!read_stream (&str, &str_len, 24, stdin)
-      || !memcpy (nonce, str, 24)
+  if (!read_stream (&str, &str_len, XAES_NONCE_SIZE, stdin)
+      || !memcpy (nonce, str, XAES_NONCE_SIZE)
       || !read_stream (&str, &str_len, 0, stdin))
     return 0;
 

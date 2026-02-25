@@ -5,7 +5,7 @@ LDFLAGS = $(shell pkg-config --libs openssl)
 
 all: openssl-xaes
 
-openssl-xaes: io.c openssl-xaes.c xaes.c xaes.h openssl-xaes.h version.h
+openssl-xaes: io.c openssl-xaes.c xaes.c io.h xaes.h version.h
 
 check: version.h openssl-xaes
 	$(MAKE) $(MAKEFLAGS) -C testsuite check
