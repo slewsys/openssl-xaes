@@ -21,9 +21,9 @@
 /*
  * derive_xaes_key: Given a password and salt, derives a 256-bit key
  *     for XAES-256-GCM using Argon2id. The salt used for generating
- *     an encryption key must be also be provided for generating the
- *     decryption key, e.g., by concatenating the salt and ciphertext.
- *     Returns 0 on failure, and 1 on success.
+ *     an encryption key must be also be provided for decryption,
+ *     e.g., by concatenating the salt and ciphertext. Returns 0 on
+ *     failure, and 1 on success.
  */
 int
 derive_xaes_key (const unsigned char *pwd,
@@ -121,10 +121,12 @@ derive_aes_key (const unsigned char key[32],
 /*
  * seal_aes_256_gcm: Encrypts plaintext using AES-256-GCM with the
  *     given derived key and lower 96 bits of a uniformally random
- *     192-bit nonce. A string vector of additional authenticated data
- *     (AAD) must include at least a terminating NULL pointer. An
- *     authentication tag is appended to ciphertext. Returns 0 on
- *     failure, and 1 on success.
+ *     192-bit nonce. The optional string vector of additional
+ *     authenticated data (AAD) must include at least a terminating
+ *     NULL pointer. An authentication tag is appended to ciphertext.
+ *     Returns 0 on failure, and 1 on success.
+ *
+ * NOTE: This function is for internal use. Do not call it directly.
  */
 int
 seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
@@ -134,19 +136,19 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
 {
   EVP_CIPHER_CTX *ctx = NULL;
   EVP_CIPHER *cipher = NULL;
-  int tag_len;
+  int tag_len = 0;
   int ciphertext_len;
   int final_len;
 
-  if (!(ctx  = EVP_CIPHER_CTX_new ())
-      || !(cipher = EVP_CIPHER_fetch (NULL, "AES-256-GCM", NULL)))
-    return 0;
+  *ciphertext = NULL;
+  *ciphertext_len_p = 0;
 
-  if (!EVP_EncryptInit_ex2 (ctx, cipher, key, nonce, NULL)
+  if (!(ctx = EVP_CIPHER_CTX_new ())
+      || !(cipher = EVP_CIPHER_fetch (NULL, "AES-256-GCM", NULL))
+      || !EVP_EncryptInit_ex2 (ctx, cipher, key, nonce, NULL)
       || !(tag_len = EVP_CIPHER_CTX_get_tag_length (ctx)))
     goto err;
-
-  if (aadv)
+  else if (aadv)
     for (int aadv_len; *aadv; ++aadv)
       {
         aadv_len = (int) strlen ((char *) *aadv);
@@ -158,15 +160,18 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
   if (!(*ciphertext = OPENSSL_malloc (plaintext_len + tag_len))
       || !EVP_EncryptUpdate (ctx, *ciphertext, &ciphertext_len,
                              plaintext, (int) plaintext_len)
-      || !EVP_EncryptFinal_ex (ctx, *ciphertext + ciphertext_len, &final_len)
-      || !EVP_CIPHER_CTX_ctrl (ctx, EVP_CTRL_AEAD_GET_TAG, tag_len,
-                               *ciphertext + ciphertext_len))
+      || !EVP_EncryptFinal_ex (ctx, *ciphertext + ciphertext_len, &final_len))
+    goto err;
+
+  const unsigned char *tag = *ciphertext + (int) ciphertext_len;
+  OSSL_PARAM params[] =
     {
-      if (*ciphertext)
-        OPENSSL_free (*ciphertext);
-      *ciphertext = NULL;
-      goto err;
-    }
+      octet_str_new (OSSL_CIPHER_PARAM_AEAD_TAG, (void *) tag, tag_len),
+      OSSL_PARAM_construct_end ()
+    };
+
+  if (!EVP_CIPHER_CTX_get_params (ctx, params))
+    goto err;
 
   EVP_CIPHER_free (cipher);
   EVP_CIPHER_CTX_free (ctx);
@@ -174,6 +179,11 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
   return 1;
 
  err:
+  if (*ciphertext)
+    {
+      OPENSSL_free (*ciphertext);
+      *ciphertext = NULL;
+    }
   EVP_CIPHER_free (cipher);
   EVP_CIPHER_CTX_free (ctx);
   return 0;
@@ -181,9 +191,11 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
 
 /*
  * open_aes_256_gcm: Decrypts ciphertext using AES-256-GCM with the
- *     given key and nonce. A string vector of additional
- *     authenticated data (AAD) must include at least a terminating
- *     NULL pointer. Returns 0 on failure, and 1 on success.
+ *     given key along with the same nonce and string vector of
+ *     additional authenticated data (AAD) used for encryption.
+ *     Returns 0 on failure, and 1 on success.
+ *
+ * NOTE: This function is for internal use. Do not call it directly.
  */
 int
 open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
@@ -193,19 +205,19 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
 {
   EVP_CIPHER_CTX *ctx = NULL;
   EVP_CIPHER *cipher = NULL;
-  int tag_len;
+  int tag_len = 0;
   int plaintext_len;
   int final_len;
 
-  if (!(ctx  = EVP_CIPHER_CTX_new ())
-      || !(cipher = EVP_CIPHER_fetch (NULL, "AES-256-GCM", NULL)))
-    return 0;
+  *plaintext = NULL;
+  *plaintext_len_p = 0;
 
-  if (!EVP_DecryptInit_ex (ctx, cipher, NULL, key, nonce)
+  if (!(ctx  = EVP_CIPHER_CTX_new ())
+      || !(cipher = EVP_CIPHER_fetch (NULL, "AES-256-GCM", NULL))
+      ||!EVP_DecryptInit_ex2 (ctx, cipher, key, nonce, NULL)
       || !(tag_len = EVP_CIPHER_CTX_get_tag_length (ctx)))
     goto err;
-
-  if (aadv)
+  else if (aadv)
     for (int aadv_len; *aadv; ++aadv)
       {
         aadv_len = (int) strlen ((char *) *aadv);
@@ -214,20 +226,19 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
           goto err;
       }
 
-  if (!(*plaintext = OPENSSL_malloc (ciphertext_len - tag_len))
-           || !EVP_DecryptUpdate (ctx, *plaintext, &plaintext_len, ciphertext,
-                                  (int) ciphertext_len - tag_len)
-           || plaintext_len < 0
-           || !EVP_CIPHER_CTX_ctrl (ctx, EVP_CTRL_AEAD_SET_TAG, tag_len,
-                                    (void *) (ciphertext + (int) ciphertext_len
-                                              - tag_len))
-           || !EVP_DecryptFinal_ex (ctx, *plaintext + plaintext_len, &final_len))
+  const unsigned char *tag = ciphertext + (int) ciphertext_len - tag_len;
+  OSSL_PARAM params[] =
     {
-      if (*plaintext)
-        OPENSSL_free (*plaintext);
-      *plaintext = NULL;
-      goto err;
-    }
+      octet_str_new (OSSL_CIPHER_PARAM_AEAD_TAG, (void *) tag, tag_len),
+      OSSL_PARAM_construct_end ()
+    };
+
+  if (!(*plaintext = OPENSSL_malloc (ciphertext_len - tag_len))
+      || !EVP_DecryptUpdate (ctx, *plaintext, &plaintext_len, ciphertext,
+                             (int) ciphertext_len - tag_len)
+      || !EVP_CIPHER_CTX_set_params (ctx, params)
+      || !EVP_DecryptFinal_ex (ctx, *plaintext + plaintext_len, &final_len))
+    goto err;
 
   EVP_CIPHER_free (cipher);
   EVP_CIPHER_CTX_free (ctx);
@@ -235,19 +246,26 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
   return 1;
 
  err:
+  if (*plaintext)
+    {
+      OPENSSL_free (*plaintext);
+      *plaintext = NULL;
+    }
   EVP_CIPHER_free (cipher);
   EVP_CIPHER_CTX_free (ctx);
   return 0;
 }
 
 /*
- * seal_xaes_256_gcm: Encrypts plaintext using XAES-256-GCM with the
- *     given 256-bit key and uniformally random 192-bit nonce. Since
- *     the nonce is used to derive an encryption key it must be also
- *     be provided to derive the decryption key, e.g., by prepending
- *     it to the ciphertext. A string vector of additional
- *     authenticated data (AAD) must include at least a terminating
- *     NULL pointer. Returns 0 on failure, and 1 on success.
+ * seal_xaes_256_gcm: Encrypts a given plaintext up to about 2 GiB
+ *     (2,147,483,631 bytes) using XAES-256-GCM with a given 256-bit
+ *     key and uniformally random 192-bit nonce. Since the nonce is
+ *     used to derive an encryption key, it must be also be provided
+ *     for decryption, e.g., by prepending it to the ciphertext. An
+ *     optional string vector of additional authenticated data (AAD)
+ *     must include at least a terminating NULL pointer. The
+ *     ciphertext buffer can be freed with `OPENSSL_free'. Returns 0
+ *     on failure, and 1 on success.
  */
 int
 seal_xaes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
@@ -264,10 +282,10 @@ seal_xaes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
 }
 
 /*
- * open_xaes_256_gcm: Decrypts ciphertext using XAES-256-GCM with a
- *     given 256-bit key and the same nonce used for encryption. A
- *     string vector of additional authenticated data (AAD) must
- *     include at least a terminating NULL pointer. Returns 0 on
+ * open_xaes_256_gcm: Decrypts the given ciphertext using XAES-256-GCM
+ *     with the same 256-bit key, nonce and string vector of
+ *     additional authenticated data (AAD) used for encryption. The
+ *     plaintext buffer can be freed with `OPENSSL_free'. Returns 0 on
  *     failure, and 1 on success.
  */
 int
