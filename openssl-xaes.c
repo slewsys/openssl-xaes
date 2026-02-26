@@ -160,13 +160,13 @@ encrypt (const xaes_aad_t *aadv[])
     goto err;
 
   free (str);
-  OPENSSL_free (enc);
+  free (enc);
   return 1;
 
 err:
   if (str)
     free (str);
-  OPENSSL_free (enc);
+  free (enc);
   return 0;
 }
 
@@ -211,13 +211,13 @@ decrypt (const xaes_aad_t *aadv[])
     goto err;
 
   free (str);
-  OPENSSL_free (dec);
+  free (dec);
   return 1;
 
 err:
   if (str)
     free (str);
-  OPENSSL_free (dec);
+  free (dec);
   return 0;
 }
 

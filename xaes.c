@@ -7,6 +7,7 @@
 #include <openssl/evp.h>
 #include <openssl/kdf.h>
 
+#include <errno.h>
 #include <string.h>
 
 #include "xaes.h"
@@ -193,8 +194,12 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
           || ciphertext_len != (int) (*aadv)->len)
         goto err;
 
-  if (!(*ciphertext_p = OPENSSL_malloc (plaintext_len + tag_len))
-      || !EVP_EncryptUpdate (ctx, *ciphertext_p, &ciphertext_len,
+  if (!(*ciphertext_p = malloc (plaintext_len + tag_len)))
+    {
+      fprintf (stderr, "%s\n", strerror (errno));
+      goto err;
+    }
+  else if (!EVP_EncryptUpdate (ctx, *ciphertext_p, &ciphertext_len,
                              plaintext, (int) plaintext_len)
       || !EVP_EncryptFinal_ex (ctx, *ciphertext_p + ciphertext_len, &final_len))
     goto err;
@@ -265,8 +270,12 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
       OSSL_PARAM_construct_end ()
     };
 
-  if (!(*plaintext_p = OPENSSL_malloc (ciphertext_len - tag_len))
-      || !EVP_DecryptUpdate (ctx, *plaintext_p, &plaintext_len, ciphertext,
+  if (!(*plaintext_p = malloc (ciphertext_len - tag_len)))
+    {
+      fprintf (stderr, "%s\n", strerror (errno));
+      goto err;
+    }
+  else if (!EVP_DecryptUpdate (ctx, *plaintext_p, &plaintext_len, ciphertext,
                              (int) ciphertext_len - tag_len)
       || !EVP_CIPHER_CTX_set_params (ctx, params))
     goto err;
@@ -298,9 +307,9 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
  *     for decryption, e.g., by prepending it to the ciphertext. An
  *     optional vector of additional authenticated data (AAD) must
  *     include at least a terminating NULL pointer. The ciphertext
- *     buffer can be freed with `OPENSSL_free'. Both the given and
- *     derived keys are zero'ed after use. Returns 0 on failure, and 1
- *     on success.
+ *     buffer can be freed with `free'. Both the given and derived
+ *     keys are zero'ed after use. Returns 0 on failure, and 1 on
+ *     success.
  */
 int
 seal_xaes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
@@ -311,19 +320,19 @@ seal_xaes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
 {
   unsigned char derived_key[XAES_KEY_SIZE];
 
-  return derive_aes_key (key, nonce, derived_key)
-    && seal_aes_256_gcm (plaintext, plaintext_len, aadv, derived_key,
-                         nonce + (XAES_NONCE_SIZE >> 1),
-                         ciphertext_p, ciphertext_len_p);
+  return (derive_aes_key (key, nonce, derived_key)
+          && seal_aes_256_gcm (plaintext, plaintext_len, aadv, derived_key,
+                               nonce + (XAES_NONCE_SIZE >> 1),
+                               ciphertext_p, ciphertext_len_p));
 }
 
 /*
  * open_xaes_256_gcm: Decrypts the given ciphertext using XAES-256-GCM
  *     with the same 256-bit key, nonce and string vector of
  *     additional authenticated data (AAD) used for encryption. The
- *     plaintext buffer can be freed with `OPENSSL_free'. Both the
- *     given and derived keys are zero'ed after use. Returns 0 on
- *     failure, and 1 on success.
+ *     plaintext buffer can be freed with `free'. Both the given and
+ *     derived keys are zero'ed after use. Returns 0 on failure, and 1
+ *     on success.
  */
 int
 open_xaes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
@@ -334,8 +343,8 @@ open_xaes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
 {
   unsigned char derived_key[XAES_KEY_SIZE];
 
-  return derive_aes_key (key, nonce, derived_key)
-    && open_aes_256_gcm (ciphertext, ciphertext_len, aadv, derived_key,
-                         nonce + (XAES_NONCE_SIZE >> 1), plaintext_p,
-                         plaintext_len_p);
+  return (derive_aes_key (key, nonce, derived_key)
+          && open_aes_256_gcm (ciphertext, ciphertext_len, aadv, derived_key,
+                               nonce + (XAES_NONCE_SIZE >> 1), plaintext_p,
+                               plaintext_len_p));
 }

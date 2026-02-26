@@ -1,6 +1,6 @@
 DESTDIR ?= /usr/local
 VERSION = $(shell git describe --tags 2>/dev/null)
-CFLAGS  = -DHAVE_EXPLICIT_BZERO=1 -Wall -Wextra -O2
+CFLAGS  = -DHAVE_EXPLICIT_BZERO=1 -Wall -Wextra -g -O2
 LDFLAGS = $(shell pkg-config --libs openssl)
 
 all: openssl-xaes
