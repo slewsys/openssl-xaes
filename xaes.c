@@ -11,24 +11,41 @@
 
 #include "xaes.h"
 
-#define utf8_str_new(key, buf_p, bufsiz)                  \
+#define utf8_str_new(key, buf_p, bufsiz)                                      \
   OSSL_PARAM_construct_utf8_string (key, buf_p, bufsiz)
-#define int_new(key, val_p)                               \
+#define int_new(key, val_p)                                                   \
   OSSL_PARAM_construct_int (key, val_p)
-#define uint32_new(key, val_p)                            \
+#define uint32_new(key, val_p)                                                \
   OSSL_PARAM_construct_uint32 (key, val_p)
-#define octet_str_new(key, buf_p, bufsiz)                 \
+#define octet_str_new(key, buf_p, bufsiz)                                     \
   OSSL_PARAM_construct_octet_string (key, buf_p, bufsiz)
+
+static void
+xaes_kdf_cleanup (EVP_KDF_CTX *ctx, EVP_KDF *kdf,
+                 unsigned char *key, size_t key_len)
+{
+#if HAVE_MEMSET_EXPLICIT
+  memset_explicit (key, 0, key_len);
+#elif HAVE_EXPLICIT_BZERO
+  explicit_bzero (key, key_len);
+#else
+  memset (key, 0, key_len);
+#endif
+
+  EVP_KDF_CTX_free (ctx);
+  EVP_KDF_free (kdf);
+}
 
 /*
  * derive_xaes_key: Given a password and salt, derives a 256-bit key
  *     for XAES-256-GCM using Argon2id. The salt used for generating
  *     an encryption key must be also be provided for decryption,
- *     e.g., by concatenating the salt and ciphertext. Returns 0 on
+ *     e.g., by concatenating the salt and ciphertext. The given
+ *     password is automatically zero'ed after use. Returns 0 on
  *     failure, and 1 on success.
  */
 int
-derive_xaes_key (const unsigned char *pwd,
+derive_xaes_key (unsigned char *pwd,
                  const unsigned char salt[ARGON2_SALT_SIZE],
                  unsigned char out[ARGON2_TAG_SIZE])
 {
@@ -51,14 +68,12 @@ derive_xaes_key (const unsigned char *pwd,
   uint32_t iter = 3;
   uint32_t lanes = 4;
   uint32_t memcost = 65536;     /* 64 MiB */
-  uint32_t early_clean = 1;     /* Zero password quickly. */
   OSSL_PARAM params[] =
     {
       uint32_new (OSSL_KDF_PARAM_ARGON2_MEMCOST, &memcost),
       uint32_new (OSSL_KDF_PARAM_ITER, &iter),
       uint32_new (OSSL_KDF_PARAM_THREADS, &threads),
       uint32_new (OSSL_KDF_PARAM_ARGON2_LANES, &lanes),
-      uint32_new (OSSL_KDF_PARAM_EARLY_CLEAN, &early_clean),
       octet_str_new (OSSL_KDF_PARAM_SALT, (void *) salt, ARGON2_SALT_SIZE),
       octet_str_new (OSSL_KDF_PARAM_PASSWORD, (void *) pwd, pwd_len),
       OSSL_PARAM_construct_end ()
@@ -67,26 +82,27 @@ derive_xaes_key (const unsigned char *pwd,
   EVP_KDF_CTX *ctx = NULL;
   int status;
 
-  if (!(kdf = EVP_KDF_fetch (NULL, "ARGON2ID", NULL)))
-    return 0;
-  else if (!(ctx = EVP_KDF_CTX_new (kdf)))
-    {
-      EVP_KDF_free (kdf);
-      return 0;
-    }
+  if (!(kdf = EVP_KDF_fetch (NULL, "ARGON2ID", NULL))
+      || !(ctx = EVP_KDF_CTX_new (kdf)))
+    goto err;
+
   status = EVP_KDF_derive (ctx, out, ARGON2_TAG_SIZE, params);
-  EVP_KDF_free (kdf);
-  EVP_KDF_CTX_free (ctx);
+  xaes_kdf_cleanup (ctx, kdf, pwd, pwd_len);
   return status;
+
+ err:
+  xaes_kdf_cleanup (ctx, kdf, pwd, pwd_len);
+  return 0;
 }
 
 /*
  * derive_aes_key: Derives a per-nonce encryption key for AES-256-GCM
  *     to reduce collision probability between the given nonce and
- *     root key. Returns 0 on failure, and 1 on success.
+ *     root key. The given key is automatically zero'ed after use.
+ *     Returns 0 on failure, and 1 on success.
  */
 int
-derive_aes_key (const unsigned char key[XAES_KEY_SIZE],
+derive_aes_key (unsigned char key[XAES_KEY_SIZE],
                 const unsigned char nonce[XAES_NONCE_SIZE],
                 unsigned char out[XAES_KEY_SIZE])
 {
@@ -109,18 +125,37 @@ derive_aes_key (const unsigned char key[XAES_KEY_SIZE],
   EVP_KDF_CTX *ctx = NULL;;
   int status;
 
-  if (!(kdf = EVP_KDF_fetch (NULL, "KBKDF", NULL)))
-    return 0;
-  else if (!(ctx = EVP_KDF_CTX_new (kdf)))
-    {
-      EVP_KDF_free (kdf);
-      return 0;
-    }
+  if (!(kdf = EVP_KDF_fetch (NULL, "KBKDF", NULL))
+      || !(ctx = EVP_KDF_CTX_new (kdf)))
+    goto err;
+
   status = EVP_KDF_derive (ctx, out, XAES_KEY_SIZE, params);
-  EVP_KDF_free (kdf);
-  EVP_KDF_CTX_free (ctx);
+  xaes_kdf_cleanup (ctx, kdf, key, XAES_KEY_SIZE);
   return status;
+
+ err:
+  xaes_kdf_cleanup (ctx, kdf, key, XAES_KEY_SIZE);
+  return 0;
 }
+
+static void
+xaes_cipher_cleanup (EVP_CIPHER_CTX *ctx, EVP_CIPHER *cipher,
+                    unsigned char *key, size_t key_len)
+
+
+{
+#if HAVE_MEMSET_EXPLICIT
+  memset_explicit (key, 0, key_len);
+#elif HAVE_EXPLICIT_BZERO
+  explicit_bzero (key, key_len);
+#else
+  memset (key, 0, key_len);
+#endif
+
+  EVP_CIPHER_free (cipher);
+  EVP_CIPHER_CTX_free (ctx);
+}
+
 
 /*
  * seal_aes_256_gcm: Encrypts plaintext using AES-256-GCM with the
@@ -128,14 +163,13 @@ derive_aes_key (const unsigned char key[XAES_KEY_SIZE],
  *     192-bit nonce. The optional string vector of additional
  *     authenticated data (AAD) must include at least a terminating
  *     NULL pointer. An authentication tag is appended to ciphertext.
- *     Returns 0 on failure, and 1 on success.
- *
- * NOTE: This function is for internal use. Do not call it directly.
+ *     The given key is automatically zero'ed after use. Returns 0 on
+ *     failure, and 1 on success.
  */
-int
+static int
 seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
                   const unsigned char *aadv[],
-                  const unsigned char key[XAES_KEY_SIZE],
+                  unsigned char key[XAES_KEY_SIZE],
                   const unsigned char nonce[XAES_NONCE_SIZE >> 1],
                   unsigned char **ciphertext, size_t *ciphertext_len_p)
 {
@@ -178,9 +212,8 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
   if (!EVP_CIPHER_CTX_get_params (ctx, params))
     goto err;
 
-  EVP_CIPHER_free (cipher);
-  EVP_CIPHER_CTX_free (ctx);
   *ciphertext_len_p = ciphertext_len + tag_len;
+  xaes_cipher_cleanup (ctx, cipher, key, XAES_KEY_SIZE);
   return 1;
 
  err:
@@ -189,23 +222,21 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
       OPENSSL_free (*ciphertext);
       *ciphertext = NULL;
     }
-  EVP_CIPHER_free (cipher);
-  EVP_CIPHER_CTX_free (ctx);
+  xaes_cipher_cleanup (ctx, cipher, key, XAES_KEY_SIZE);
   return 0;
 }
 
 /*
  * open_aes_256_gcm: Decrypts ciphertext using AES-256-GCM with the
  *     given key along with the same nonce and string vector of
- *     additional authenticated data (AAD) used for encryption.
- *     Returns 0 on failure, and 1 on success.
- *
- * NOTE: This function is for internal use. Do not call it directly.
+ *     additional authenticated data (AAD) used for encryption. The
+ *     given key is automatically zero'ed after use. Returns 0 on
+ *     failure, and 1 on success.
  */
-int
+static int
 open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
                   const unsigned char *aadv[],
-                  const unsigned char key[XAES_KEY_SIZE],
+                  unsigned char key[XAES_KEY_SIZE],
                   const unsigned char nonce[XAES_NONCE_SIZE >> 1],
                   unsigned char **plaintext, size_t *plaintext_len_p)
 {
@@ -246,9 +277,8 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
       || !EVP_DecryptFinal_ex (ctx, *plaintext + plaintext_len, &final_len))
     goto err;
 
-  EVP_CIPHER_free (cipher);
-  EVP_CIPHER_CTX_free (ctx);
   *plaintext_len_p = plaintext_len;
+  xaes_cipher_cleanup (ctx, cipher, key, XAES_KEY_SIZE);
   return 1;
 
  err:
@@ -257,8 +287,7 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
       OPENSSL_free (*plaintext);
       *plaintext = NULL;
     }
-  EVP_CIPHER_free (cipher);
-  EVP_CIPHER_CTX_free (ctx);
+  xaes_cipher_cleanup (ctx, cipher, key, XAES_KEY_SIZE);
   return 0;
 }
 
@@ -270,44 +299,44 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
  *     for decryption, e.g., by prepending it to the ciphertext. An
  *     optional string vector of additional authenticated data (AAD)
  *     must include at least a terminating NULL pointer. The
- *     ciphertext buffer can be freed with `OPENSSL_free'. Returns 0
- *     on failure, and 1 on success.
+ *     ciphertext buffer can be freed with `OPENSSL_free'. Both the
+ *     given and derived keys are zero'ed after use. Returns 0 on
+ *     failure, and 1 on success.
  */
 int
 seal_xaes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
                    const unsigned char *aadv[],
-                   const unsigned char key[XAES_KEY_SIZE],
+                   unsigned char key[XAES_KEY_SIZE],
                    const unsigned char nonce[XAES_NONCE_SIZE],
                    unsigned char **ciphertext, size_t *ciphertext_len_p)
 {
   unsigned char derived_key[XAES_KEY_SIZE];
 
-  if (!derive_aes_key (key, nonce, derived_key))
-    return 0;
-  return seal_aes_256_gcm (plaintext, plaintext_len, aadv, derived_key,
-                           nonce + (XAES_NONCE_SIZE >> 1),
-                           ciphertext, ciphertext_len_p);
+  return derive_aes_key (key, nonce, derived_key)
+    && seal_aes_256_gcm (plaintext, plaintext_len, aadv, derived_key,
+                         nonce + (XAES_NONCE_SIZE >> 1),
+                         ciphertext, ciphertext_len_p);
 }
 
 /*
  * open_xaes_256_gcm: Decrypts the given ciphertext using XAES-256-GCM
  *     with the same 256-bit key, nonce and string vector of
  *     additional authenticated data (AAD) used for encryption. The
- *     plaintext buffer can be freed with `OPENSSL_free'. Returns 0 on
+ *     plaintext buffer can be freed with `OPENSSL_free'. Both the
+ *     given and derived keys are zero'ed after use. Returns 0 on
  *     failure, and 1 on success.
  */
 int
 open_xaes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
                    const unsigned char *aadv[],
-                   const unsigned char key[XAES_KEY_SIZE],
+                   unsigned char key[XAES_KEY_SIZE],
                    const unsigned char nonce[XAES_NONCE_SIZE],
                    unsigned char **plaintext, size_t *plaintext_len_p)
 {
   unsigned char derived_key[XAES_KEY_SIZE];
 
-  if (!derive_aes_key (key, nonce, derived_key))
-    return 0;
-  return open_aes_256_gcm (ciphertext, ciphertext_len, aadv, derived_key,
-                           nonce + (XAES_NONCE_SIZE >> 1), plaintext,
-                           plaintext_len_p);
+  return derive_aes_key (key, nonce, derived_key)
+    && open_aes_256_gcm (ciphertext, ciphertext_len, aadv, derived_key,
+                         nonce + (XAES_NONCE_SIZE >> 1), plaintext,
+                         plaintext_len_p);
 }

@@ -92,19 +92,14 @@ encrypt (const unsigned char *aadv[])
   unsigned char *str = NULL;
   size_t str_len = 0;
   size_t enc_len = 0;
+  unsigned int salt_bits = ARGON2_SALT_SIZE << 3;
+  unsigned int nonce_bits = XAES_NONCE_SIZE << 3;
 
   if (!read_passphrase ("Password: ", password, BUFSIZ)
-      || RAND_bytes ((unsigned char *) salt, ARGON2_SALT_SIZE) != 1
+      || RAND_bytes_ex (NULL, (unsigned char *) salt, ARGON2_SALT_SIZE,
+                        salt_bits) != 1
       || !derive_xaes_key (password, salt, xaes_key))
     return 0;
-
-#if HAVE_MEMSET_EXPLICIT
-  memset_explicit (password, 0, strlen ((char *) password));
-#elif HAVE_EXPLICIT_BZERO
-  explicit_bzero (password, strlen ((char *) password));
-#else
-  memset (password, 0, strlen ((char *) password));
-#endif
 
   if (!read_stream (&str, &str_len, 0, stdin))
     return 0;
@@ -115,13 +110,15 @@ encrypt (const unsigned char *aadv[])
       fprintf (stderr, "Input too large\n");
       return 0;
     }
-  else if (RAND_bytes ((unsigned char *) nonce, XAES_NONCE_SIZE) != 1
+  else if (RAND_bytes_ex (NULL, (unsigned char *) nonce, XAES_NONCE_SIZE,
+                          nonce_bits) != 1
            || !seal_xaes_256_gcm (str, str_len, aadv, xaes_key, nonce,
                                   &enc, &enc_len)
            || !write_stream (salt, ARGON2_SALT_SIZE, stdout)
            || !write_stream (nonce, XAES_NONCE_SIZE, stdout)
            || !write_stream (enc, enc_len, stdout))
     return 0;
+
   OPENSSL_free (enc);
   return 1;
 }
@@ -148,18 +145,8 @@ decrypt (const unsigned char *aadv[])
   if (!read_passphrase ("Password: ", password, BUFSIZ)
       || !read_stream (&str, &str_len, ARGON2_SALT_SIZE, stdin)
       || !memcpy (salt, str, ARGON2_SALT_SIZE)
-      || !derive_xaes_key (password, salt, xaes_key))
-    return 0;
-
-#if HAVE_MEMSET_EXPLICIT
-  memset_explicit (password, 0, strlen ((char *) password));
-#elif HAVE_EXPLICIT_BZERO
-  explicit_bzero (password, strlen ((char *) password));
-#else
-  memset (password, 0, strlen ((char *) password));
-#endif
-
-  if (!read_stream (&str, &str_len, XAES_NONCE_SIZE, stdin)
+      || !derive_xaes_key (password, salt, xaes_key)
+      || !read_stream (&str, &str_len, XAES_NONCE_SIZE, stdin)
       || !memcpy (nonce, str, XAES_NONCE_SIZE)
       || !read_stream (&str, &str_len, 0, stdin))
     return 0;

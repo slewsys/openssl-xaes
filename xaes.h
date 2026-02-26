@@ -23,30 +23,20 @@
 #define ARGON2_SALT_SIZE 16
 #define ARGON2_TAG_SIZE 32
 
-int derive_xaes_key (const unsigned char *,
+int derive_xaes_key (unsigned char *,
                      const unsigned char[ARGON2_SALT_SIZE],
                      unsigned char[ARGON2_TAG_SIZE]);
-int derive_aes_key (const unsigned char[XAES_KEY_SIZE],
+int derive_aes_key (unsigned char[XAES_KEY_SIZE],
                     const unsigned char[XAES_NONCE_SIZE],
                     unsigned char[XAES_KEY_SIZE]);
-int seal_aes_256_gcm (const unsigned char *, size_t,
-                      const unsigned char *[],
-                      const unsigned char[XAES_KEY_SIZE],
-                      const unsigned char[XAES_NONCE_SIZE >> 1],
-                      unsigned char **, size_t *);
-int open_aes_256_gcm (const unsigned char *, size_t,
-                      const unsigned char *[],
-                      const unsigned char[XAES_KEY_SIZE],
-                      const unsigned char[XAES_NONCE_SIZE >> 1],
-                      unsigned char **, size_t *);
 int seal_xaes_256_gcm (const unsigned char *, size_t,
                        const unsigned char *[],
-                       const unsigned char[XAES_KEY_SIZE],
+                       unsigned char[XAES_KEY_SIZE],
                        const unsigned char[XAES_NONCE_SIZE],
                        unsigned char **, size_t *);
 int open_xaes_256_gcm (const unsigned char *, size_t,
                        const unsigned char *[],
-                       const unsigned char[XAES_KEY_SIZE],
+                       unsigned char[XAES_KEY_SIZE],
                        const unsigned char[XAES_NONCE_SIZE],
                        unsigned char **, size_t *);
 #endif  /* _XAES_H */
