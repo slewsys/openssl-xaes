@@ -1,4 +1,4 @@
-/* io.c: I/O functions for openssl-xaes file-encryption utility.
+/* io.c: I/O functions for openssl-xaes file-encryption filter.
  *
  * SPDX-License-Identifier: CC-BY-4.0
  */

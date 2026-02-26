@@ -1,4 +1,4 @@
-/* openssl-xaes.c: Entry point for openssl-xaes file-encryption utility.
+/* openssl-xaes.c: Entry point for openssl-xaes file-encryption filter.
  *
  * SPDX-License-Identifier: CC-BY-4.0
  */

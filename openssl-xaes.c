@@ -1,8 +1,8 @@
-/* openssl-xaes.c: Entry point for openssl-xaes file-encryption utility.
+/* openssl-xaes.c: Entry point for openssl-xaes file-encryption filter.
  *
  * SPDX-License-Identifier: CC-BY-4.0
  *
- * This utility is an application of XAES-256-GCM for password-based
+ * This filter is an application of XAES-256-GCM for password-based
  * file encryption. The password in hashed with Argon2id to derive a
  * 256-bit root key for XAES-256-GCM. Please note that no amount of
  * encryption can protect against weak passwords.
@@ -19,6 +19,7 @@
  */
 #include <openssl/rand.h>
 
+#include <errno.h>
 #include <getopt.h>
 #include <string.h>
 #include <unistd.h>
@@ -27,15 +28,15 @@
 #include "xaes.h"
 #include "version.h"
 
-
-static int decrypt (const unsigned char *[]);
-static int encrypt (const unsigned char *[]);
+static int decrypt (const xaes_aad_t *[]);
+static int encrypt (const xaes_aad_t *[]);
+static xaes_aad_t **argv2aadv (int, char *[]);
 static void usage (const char *);
 
 int
 main (int argc, char *argv[])
 {
-  int (*cmd) (const unsigned char *[]) = encrypt;
+  int (*cmd) (const xaes_aad_t *[]) = encrypt;
   const struct option long_opts[] =
     {
       {"decrypt",  no_argument, NULL, 'd'},
@@ -71,18 +72,59 @@ main (int argc, char *argv[])
   argv += optind;
   argc -= optind;
 
-  return cmd ((const unsigned char **) argv);
+  exit (!cmd ((const xaes_aad_t **) argv2aadv (argc, argv)));
+}
+
+/*
+ * argv2aadv: Converts a NULL-terminated vector of NUL-terminated strings (i.e., argv)
+ *     to a NULL-terminated vector of xaes_aad_t pointers.
+ */
+static xaes_aad_t **
+argv2aadv (int argc, char *argv[])
+{
+  static xaes_aad_t **aadv = NULL;;
+  static int aadv_size = 0;
+
+  if (!argc)
+    return NULL;
+
+  for (int i = 0; i < aadv_size; ++i)
+    free (aadv[i]);
+
+  aadv_size = (argc + 1) * sizeof (xaes_aad_t *);
+  if ((aadv = (xaes_aad_t **) realloc (aadv, aadv_size)) == NULL)
+    {
+      fprintf (stderr, "%s\n", strerror (errno));
+      aadv_size = 0;
+      return NULL;
+    }
+
+  for (int i = 0; i < argc; ++i)
+    {
+      if ((aadv[i] = (xaes_aad_t *) malloc (sizeof (xaes_aad_t))) == NULL)
+        {
+          fprintf (stderr, "%s\n", strerror (errno));
+          aadv_size = i ? i - 1 : 0;
+          return NULL;
+        }
+
+      aadv[i]->data = (unsigned char *) argv[i];
+      aadv[i]->len = strlen (argv[i]);
+    }
+
+  aadv[argc] = NULL;
+  return aadv;
 }
 
 /*
  * encrypt: Password is read from /dev/tty. Plaintext is read from
  *     standard input (stdin). Ciphertext is written to standard
- *     output (stdout). The parameter `aadv' is an optional string
- *     vector of additional authenticated data (AAD). If provided, it
- *     must include at least a terminating NULL pointer.
+ *     output (stdout). The parameter `aadv' is an optional vector of
+ *     additional authenticated data (AAD). If provided, it must
+ *     include at least a terminating NULL pointer.
  */
 static int
-encrypt (const unsigned char *aadv[])
+encrypt (const xaes_aad_t *aadv[])
 {
   unsigned char password[BUFSIZ];
   unsigned char salt[ARGON2_SALT_SIZE];
@@ -98,17 +140,15 @@ encrypt (const unsigned char *aadv[])
   if (!read_passphrase ("Password: ", password, BUFSIZ)
       || RAND_bytes_ex (NULL, (unsigned char *) salt, ARGON2_SALT_SIZE,
                         salt_bits) != 1
-      || !derive_xaes_key (password, salt, xaes_key))
-    return 0;
-
-  if (!read_stream (&str, &str_len, 0, stdin))
-    return 0;
+      || !derive_xaes_key (password, salt, xaes_key)
+      || !read_stream (&str, &str_len, 0, stdin))
+    goto err;
 
   /* OpenSSL 3.x API imposes file size limit INT_MAX. */
   else if (INT_MAX - GCM_TAG_MAX < str_len)
     {
       fprintf (stderr, "Input too large\n");
-      return 0;
+      goto err;
     }
   else if (RAND_bytes_ex (NULL, (unsigned char *) nonce, XAES_NONCE_SIZE,
                           nonce_bits) != 1
@@ -117,21 +157,28 @@ encrypt (const unsigned char *aadv[])
            || !write_stream (salt, ARGON2_SALT_SIZE, stdout)
            || !write_stream (nonce, XAES_NONCE_SIZE, stdout)
            || !write_stream (enc, enc_len, stdout))
-    return 0;
+    goto err;
 
+  free (str);
   OPENSSL_free (enc);
   return 1;
+
+err:
+  if (str)
+    free (str);
+  OPENSSL_free (enc);
+  return 0;
 }
 
 /*
  * decocde: Password is read from /dev/tty. Ciphertext is read from
  *     standard input (stdin). Plaintext is written to standard output
- *     (stdout). The parameter `aadv' is a string vector of any
- *     additional authenticated data (AAD). If provided, it must
- *     include at least a terminating NULL pointer.
+ *     (stdout). The parameter `aadv' is a vector of any additional
+ *     authenticated data (AAD). If provided, it must include at least
+ *     a terminating NULL pointer.
  */
 static int
-decrypt (const unsigned char *aadv[])
+decrypt (const xaes_aad_t *aadv[])
 {
   unsigned char password[BUFSIZ];
   unsigned char salt[ARGON2_SALT_SIZE];
@@ -149,21 +196,29 @@ decrypt (const unsigned char *aadv[])
       || !read_stream (&str, &str_len, XAES_NONCE_SIZE, stdin)
       || !memcpy (nonce, str, XAES_NONCE_SIZE)
       || !read_stream (&str, &str_len, 0, stdin))
-    return 0;
+    goto err;
 
   /* OpenSSL 3.x API imposes file size limit INT_MAX. */
   else if (INT_MAX - GCM_TAG_MAX < str_len)
     {
       fprintf (stderr, "Input too large\n");
-      return 0;
+      goto err;
     }
 
   else if (!open_xaes_256_gcm (str, str_len, aadv, xaes_key, nonce,
                              &dec, &dec_len)
       || !write_stream (dec, dec_len, stdout))
-    return 0;
+    goto err;
+
+  free (str);
   OPENSSL_free (dec);
   return 1;
+
+err:
+  if (str)
+    free (str);
+  OPENSSL_free (dec);
+  return 0;
 }
 
 static void

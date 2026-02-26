@@ -156,22 +156,21 @@ xaes_cipher_cleanup (EVP_CIPHER_CTX *ctx, EVP_CIPHER *cipher,
   EVP_CIPHER_CTX_free (ctx);
 }
 
-
 /*
  * seal_aes_256_gcm: Encrypts plaintext using AES-256-GCM with the
  *     given derived key and lower 96 bits of a uniformally random
- *     192-bit nonce. The optional string vector of additional
- *     authenticated data (AAD) must include at least a terminating
- *     NULL pointer. An authentication tag is appended to ciphertext.
- *     The given key is automatically zero'ed after use. Returns 0 on
- *     failure, and 1 on success.
+ *     192-bit nonce. The optional vector of additional authenticated
+ *     data (AAD) must include at least a terminating NULL pointer. An
+ *     authentication tag is appended to ciphertext. The given key is
+ *     automatically zero'ed after use. Returns 0 on failure, and 1 on
+ *     success.
  */
 static int
 seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
-                  const unsigned char *aadv[],
+                  const xaes_aad_t *aadv[],
                   unsigned char key[XAES_KEY_SIZE],
                   const unsigned char nonce[XAES_NONCE_SIZE >> 1],
-                  unsigned char **ciphertext, size_t *ciphertext_len_p)
+                  unsigned char **ciphertext_p, size_t *ciphertext_len_p)
 {
   EVP_CIPHER_CTX *ctx = NULL;
   EVP_CIPHER *cipher = NULL;
@@ -179,7 +178,7 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
   int ciphertext_len;
   int final_len;
 
-  *ciphertext = NULL;
+  *ciphertext_p = NULL;
   *ciphertext_len_p = 0;
 
   if (!(ctx = EVP_CIPHER_CTX_new ())
@@ -188,21 +187,19 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
       || !(tag_len = EVP_CIPHER_CTX_get_tag_length (ctx)))
     goto err;
   else if (aadv)
-    for (int aadv_len; *aadv; ++aadv)
-      {
-        aadv_len = (int) strlen ((char *) *aadv);
-        if (!EVP_EncryptUpdate (ctx, NULL, &ciphertext_len, *aadv, aadv_len)
-            || ciphertext_len != aadv_len)
-          goto err;
-      }
+    for (; *aadv; ++aadv)
+      if (!EVP_EncryptUpdate (ctx, NULL, &ciphertext_len, (*aadv)->data,
+                              (*aadv)->len)
+          || ciphertext_len != (int) (*aadv)->len)
+        goto err;
 
-  if (!(*ciphertext = OPENSSL_malloc (plaintext_len + tag_len))
-      || !EVP_EncryptUpdate (ctx, *ciphertext, &ciphertext_len,
+  if (!(*ciphertext_p = OPENSSL_malloc (plaintext_len + tag_len))
+      || !EVP_EncryptUpdate (ctx, *ciphertext_p, &ciphertext_len,
                              plaintext, (int) plaintext_len)
-      || !EVP_EncryptFinal_ex (ctx, *ciphertext + ciphertext_len, &final_len))
+      || !EVP_EncryptFinal_ex (ctx, *ciphertext_p + ciphertext_len, &final_len))
     goto err;
 
-  const unsigned char *tag = *ciphertext + (int) ciphertext_len;
+  const unsigned char *tag = *ciphertext_p + (int) ciphertext_len;
   OSSL_PARAM params[] =
     {
       octet_str_new (OSSL_CIPHER_PARAM_AEAD_TAG, (void *) tag, tag_len),
@@ -217,10 +214,10 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
   return 1;
 
  err:
-  if (*ciphertext)
+  if (*ciphertext_p)
     {
-      OPENSSL_free (*ciphertext);
-      *ciphertext = NULL;
+      OPENSSL_free (*ciphertext_p);
+      *ciphertext_p = NULL;
     }
   xaes_cipher_cleanup (ctx, cipher, key, XAES_KEY_SIZE);
   return 0;
@@ -228,17 +225,17 @@ seal_aes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
 
 /*
  * open_aes_256_gcm: Decrypts ciphertext using AES-256-GCM with the
- *     given key along with the same nonce and string vector of
- *     additional authenticated data (AAD) used for encryption. The
- *     given key is automatically zero'ed after use. Returns 0 on
- *     failure, and 1 on success.
+ *     given key along with the same nonce and vector of additional
+ *     authenticated data (AAD) used for encryption. The given key is
+ *     automatically zero'ed after use. Returns 0 on failure, and 1 on
+ *     success.
  */
 static int
 open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
-                  const unsigned char *aadv[],
+                  const xaes_aad_t *aadv[],
                   unsigned char key[XAES_KEY_SIZE],
                   const unsigned char nonce[XAES_NONCE_SIZE >> 1],
-                  unsigned char **plaintext, size_t *plaintext_len_p)
+                  unsigned char **plaintext_p, size_t *plaintext_len_p)
 {
   EVP_CIPHER_CTX *ctx = NULL;
   EVP_CIPHER *cipher = NULL;
@@ -246,7 +243,7 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
   int plaintext_len;
   int final_len;
 
-  *plaintext = NULL;
+  *plaintext_p = NULL;
   *plaintext_len_p = 0;
 
   if (!(ctx  = EVP_CIPHER_CTX_new ())
@@ -255,13 +252,11 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
       || !(tag_len = EVP_CIPHER_CTX_get_tag_length (ctx)))
     goto err;
   else if (aadv)
-    for (int aadv_len; *aadv; ++aadv)
-      {
-        aadv_len = (int) strlen ((char *) *aadv);
-        if (!EVP_DecryptUpdate (ctx, NULL, &plaintext_len, *aadv, aadv_len)
-            || plaintext_len != aadv_len)
-          goto err;
-      }
+    for (; *aadv; ++aadv)
+      if (!EVP_DecryptUpdate (ctx, NULL, &plaintext_len, (*aadv)->data,
+                              (*aadv)->len)
+          || plaintext_len != (int) (*aadv)->len)
+        goto err;
 
   const unsigned char *tag = ciphertext + (int) ciphertext_len - tag_len;
   OSSL_PARAM params[] =
@@ -270,22 +265,26 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
       OSSL_PARAM_construct_end ()
     };
 
-  if (!(*plaintext = OPENSSL_malloc (ciphertext_len - tag_len))
-      || !EVP_DecryptUpdate (ctx, *plaintext, &plaintext_len, ciphertext,
+  if (!(*plaintext_p = OPENSSL_malloc (ciphertext_len - tag_len))
+      || !EVP_DecryptUpdate (ctx, *plaintext_p, &plaintext_len, ciphertext,
                              (int) ciphertext_len - tag_len)
-      || !EVP_CIPHER_CTX_set_params (ctx, params)
-      || !EVP_DecryptFinal_ex (ctx, *plaintext + plaintext_len, &final_len))
+      || !EVP_CIPHER_CTX_set_params (ctx, params))
     goto err;
+  else if (!EVP_DecryptFinal_ex (ctx, *plaintext_p + plaintext_len, &final_len))
+    {
+      fprintf (stderr, "Error: Message authentication failed.\n");
+      goto err;
+    }
 
   *plaintext_len_p = plaintext_len;
   xaes_cipher_cleanup (ctx, cipher, key, XAES_KEY_SIZE);
   return 1;
 
  err:
-  if (*plaintext)
+  if (*plaintext_p)
     {
-      OPENSSL_free (*plaintext);
-      *plaintext = NULL;
+      OPENSSL_free (*plaintext_p);
+      *plaintext_p = NULL;
     }
   xaes_cipher_cleanup (ctx, cipher, key, XAES_KEY_SIZE);
   return 0;
@@ -297,25 +296,25 @@ open_aes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
  *     key and uniformally random 192-bit nonce. Since the nonce is
  *     used to derive an encryption key, it must be also be provided
  *     for decryption, e.g., by prepending it to the ciphertext. An
- *     optional string vector of additional authenticated data (AAD)
- *     must include at least a terminating NULL pointer. The
- *     ciphertext buffer can be freed with `OPENSSL_free'. Both the
- *     given and derived keys are zero'ed after use. Returns 0 on
- *     failure, and 1 on success.
+ *     optional vector of additional authenticated data (AAD) must
+ *     include at least a terminating NULL pointer. The ciphertext
+ *     buffer can be freed with `OPENSSL_free'. Both the given and
+ *     derived keys are zero'ed after use. Returns 0 on failure, and 1
+ *     on success.
  */
 int
 seal_xaes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
-                   const unsigned char *aadv[],
+                   const xaes_aad_t *aadv[],
                    unsigned char key[XAES_KEY_SIZE],
                    const unsigned char nonce[XAES_NONCE_SIZE],
-                   unsigned char **ciphertext, size_t *ciphertext_len_p)
+                   unsigned char **ciphertext_p, size_t *ciphertext_len_p)
 {
   unsigned char derived_key[XAES_KEY_SIZE];
 
   return derive_aes_key (key, nonce, derived_key)
     && seal_aes_256_gcm (plaintext, plaintext_len, aadv, derived_key,
                          nonce + (XAES_NONCE_SIZE >> 1),
-                         ciphertext, ciphertext_len_p);
+                         ciphertext_p, ciphertext_len_p);
 }
 
 /*
@@ -328,15 +327,15 @@ seal_xaes_256_gcm (const unsigned char *plaintext, size_t plaintext_len,
  */
 int
 open_xaes_256_gcm (const unsigned char *ciphertext, size_t ciphertext_len,
-                   const unsigned char *aadv[],
+                   const xaes_aad_t *aadv[],
                    unsigned char key[XAES_KEY_SIZE],
                    const unsigned char nonce[XAES_NONCE_SIZE],
-                   unsigned char **plaintext, size_t *plaintext_len_p)
+                   unsigned char **plaintext_p, size_t *plaintext_len_p)
 {
   unsigned char derived_key[XAES_KEY_SIZE];
 
   return derive_aes_key (key, nonce, derived_key)
     && open_aes_256_gcm (ciphertext, ciphertext_len, aadv, derived_key,
-                         nonce + (XAES_NONCE_SIZE >> 1), plaintext,
+                         nonce + (XAES_NONCE_SIZE >> 1), plaintext_p,
                          plaintext_len_p);
 }

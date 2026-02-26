@@ -23,6 +23,12 @@
 #define ARGON2_SALT_SIZE 16
 #define ARGON2_TAG_SIZE 32
 
+typedef struct xaes_aad
+{
+  unsigned char *data;
+  size_t len;
+} xaes_aad_t;
+
 int derive_xaes_key (unsigned char *,
                      const unsigned char[ARGON2_SALT_SIZE],
                      unsigned char[ARGON2_TAG_SIZE]);
@@ -30,12 +36,12 @@ int derive_aes_key (unsigned char[XAES_KEY_SIZE],
                     const unsigned char[XAES_NONCE_SIZE],
                     unsigned char[XAES_KEY_SIZE]);
 int seal_xaes_256_gcm (const unsigned char *, size_t,
-                       const unsigned char *[],
+                       const xaes_aad_t *[],
                        unsigned char[XAES_KEY_SIZE],
                        const unsigned char[XAES_NONCE_SIZE],
                        unsigned char **, size_t *);
 int open_xaes_256_gcm (const unsigned char *, size_t,
-                       const unsigned char *[],
+                       const xaes_aad_t *[],
                        unsigned char[XAES_KEY_SIZE],
                        const unsigned char[XAES_NONCE_SIZE],
                        unsigned char **, size_t *);
