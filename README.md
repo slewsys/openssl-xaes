@@ -44,6 +44,11 @@ For a description of the algorithm, see
 The specification and further discussion is available from
 [The Community Crytography Specification Project - XAES-256-GCM](https://github.com/C2SP/C2SP/blob/main/XAES-256-GCM.md).
 
+Compared to the
+[OpenSSL-based XAES-256-GCM reference](https://github.com/C2SP/C2SP/blob/main/XAES-256-GCM/openssl/openssl.c),
+this adds support for additional authenticated data (AAD) and includes
+an OpenSSL-based accumulated vector test.
+
 ## BUILD AND INSTALL
 
 `openssl-xaes` is only available in source form. To build requires a C
