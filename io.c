@@ -85,7 +85,7 @@ unsigned char *
 read_passphrase (const char *prompt, unsigned char *buf, int bufsiz, int *length)
 {
   int fd = -1;
-  int n;
+  int n = 0;
   int status = -1;
 
   if (!buf)
@@ -111,7 +111,7 @@ read_passphrase (const char *prompt, unsigned char *buf, int bufsiz, int *length
     }
 
  read_pass:
-  for (n = 0; n < bufsiz && (status = read (fd, buf + n, 1)) == 1; ++n)
+  for (; n < bufsiz && (status = read (fd, buf + n, 1)) == 1; ++n)
     switch (buf[n])
       {
       case '\003':              /* Interrupt */
