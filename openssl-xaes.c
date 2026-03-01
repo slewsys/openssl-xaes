@@ -28,9 +28,12 @@
 #include "xaes.h"
 #include "version.h"
 
+static xaes_aad_t **argv2aadv (int, char *[]);
+static void clean_up (unsigned char *pwd1, int pwd1_len,
+                      unsigned char *pwd2, int pwd2_len,
+                      unsigned char *str, unsigned char *ciph);
 static int decrypt (const xaes_aad_t *[]);
 static int encrypt (const xaes_aad_t *[]);
-static xaes_aad_t **argv2aadv (int, char *[]);
 static void usage (const char *);
 
 int
@@ -127,6 +130,7 @@ static int
 encrypt (const xaes_aad_t *aadv[])
 {
   unsigned char password[BUFSIZ];
+  unsigned char confirm[BUFSIZ];
   unsigned char salt[ARGON2_SALT_SIZE];
   unsigned char xaes_key[XAES_KEY_SIZE];
   unsigned char nonce[XAES_NONCE_SIZE];
@@ -136,10 +140,27 @@ encrypt (const xaes_aad_t *aadv[])
   size_t enc_len = 0;
   unsigned int salt_bits = ARGON2_SALT_SIZE << 3;
   unsigned int nonce_bits = XAES_NONCE_SIZE << 3;
+  int password_len = 0;
+  int confirm_len = 0;
 
-  if (!read_passphrase ("Password: ", password, BUFSIZ)
-      || RAND_bytes_ex (NULL, (unsigned char *) salt, ARGON2_SALT_SIZE,
-                        salt_bits) != 1
+  if (!read_passphrase ("Password: ", password, BUFSIZ, &password_len)
+      || !read_passphrase ("Confirm password: ", confirm, BUFSIZ, &confirm_len))
+    {
+        fprintf (stderr, "Failed to read password.\n");
+        goto err;
+    }
+  else if (password_len != confirm_len
+           || strncmp ((char *)password, (char *)confirm, password_len))
+    {
+      fprintf (stderr, "Passwords do not match.\n");
+      goto err;
+    }
+
+  clean_up (confirm, confirm_len, NULL, 0, NULL, NULL);
+  confirm_len = 0;
+
+  if (RAND_bytes_ex (NULL, (unsigned char *) salt, ARGON2_SALT_SIZE,
+                     salt_bits) != 1
       || !derive_xaes_key (password, salt, xaes_key)
       || !read_stream (&str, &str_len, 0, stdin))
     goto err;
@@ -147,7 +168,7 @@ encrypt (const xaes_aad_t *aadv[])
   /* OpenSSL 3.x API imposes file size limit INT_MAX. */
   else if (INT_MAX - GCM_TAG_MAX < str_len)
     {
-      fprintf (stderr, "Input too large\n");
+      fprintf (stderr, "Input too long\n");
       goto err;
     }
   else if (RAND_bytes_ex (NULL, (unsigned char *) nonce, XAES_NONCE_SIZE,
@@ -159,14 +180,11 @@ encrypt (const xaes_aad_t *aadv[])
            || !write_stream (enc, enc_len, stdout))
     goto err;
 
-  free (str);
-  free (enc);
+  clean_up (NULL, 0, NULL, 0, str, enc);
   return 1;
 
 err:
-  if (str)
-    free (str);
-  free (enc);
+  clean_up (password, password_len, confirm, confirm_len, str, enc);
   return 0;
 }
 
@@ -188,9 +206,16 @@ decrypt (const xaes_aad_t *aadv[])
   unsigned char *str = NULL;
   size_t dec_len = 0;
   size_t str_len = 0;
+  int password_len = 0;
 
-  if (!read_passphrase ("Password: ", password, BUFSIZ)
-      || !read_stream (&str, &str_len, ARGON2_SALT_SIZE, stdin)
+  if (!read_passphrase ("Password: ", password, BUFSIZ, &password_len))
+    {
+      fprintf (stderr, "Failed to read password.\n");
+      goto err;
+    }
+
+
+  if (!read_stream (&str, &str_len, ARGON2_SALT_SIZE, stdin)
       || !memcpy (salt, str, ARGON2_SALT_SIZE)
       || !derive_xaes_key (password, salt, xaes_key)
       || !read_stream (&str, &str_len, XAES_NONCE_SIZE, stdin)
@@ -201,24 +226,54 @@ decrypt (const xaes_aad_t *aadv[])
   /* OpenSSL 3.x API imposes file size limit INT_MAX. */
   else if (INT_MAX - GCM_TAG_MAX < str_len)
     {
-      fprintf (stderr, "Input too large\n");
+      fprintf (stderr, "Input too long\n");
       goto err;
     }
-
   else if (!open_xaes_256_gcm (str, str_len, aadv, xaes_key, nonce,
                              &dec, &dec_len)
       || !write_stream (dec, dec_len, stdout))
     goto err;
 
-  free (str);
-  free (dec);
+  clean_up (NULL, 0, NULL, 0, str, dec);
   return 1;
 
 err:
-  if (str)
-    free (str);
-  free (dec);
+  clean_up (password, password_len, NULL, 0, str, dec);
   return 0;
+}
+
+void
+clean_up (unsigned char pwd1[], int pwd1_len,
+            unsigned char pwd2[], int pwd2_len,
+            unsigned char *plain, unsigned char *cipher)
+{
+  if (pwd1_len)
+    {
+#if HAVE_MEMSET_EXPLICIT
+      memset_explicit (pwd1, 0, pwd1_len);
+#elif HAVE_EXPLICIT_BZERO
+      explicit_bzero (pwd1, pwd1_len);
+#else
+      memset (pwd1, 0, pwd1_len);
+#endif
+    }
+
+  if (pwd2_len)
+    {
+#if HAVE_MEMSET_EXPLICIT
+      memset_explicit (pwd2, 0, pwd2_len);
+#elif HAVE_EXPLICIT_BZERO
+      explicit_bzero (pwd2, pwd2_len);
+#else
+      memset (pwd2, 0, pwd2_len);
+#endif
+    }
+
+    if (plain)
+      free (plain);
+
+    if (cipher)
+      free (cipher);
 }
 
 static void

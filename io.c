@@ -82,7 +82,7 @@ set_terminal (int fd, int raw)
 }
 
 unsigned char *
-read_passphrase (const char *prompt, unsigned char *buf, int bufsiz)
+read_passphrase (const char *prompt, unsigned char *buf, int bufsiz, int *length)
 {
   int fd = -1;
   int n;
@@ -111,15 +111,19 @@ read_passphrase (const char *prompt, unsigned char *buf, int bufsiz)
     }
 
  read_pass:
-   for (n = 0; n < bufsiz
-          && (status = read (fd, buf + n, 1)) == 1
-          && buf[n] != '\n'; ++n)
-     ;
+  for (n = 0; n < bufsiz && (status = read (fd, buf + n, 1)) == 1; ++n)
+    switch (buf[n])
+      {
+      case '\003':              /* Interrupt */
+      case '\004':              /* EOT */
+      case '\n':                /* Newline */
+        goto end;
+      case '\025':              /* KILL */
+        n = -1;
+        break;
+      }
 
-   buf[n] = '\0';
-   if (prompt)
-     fprintf (stderr, "\r\n");
-
+ end:
    if (status == -1)
      {
        if (errno == EINTR)
@@ -128,20 +132,31 @@ read_passphrase (const char *prompt, unsigned char *buf, int bufsiz)
            goto read_pass;
          }
 
-       fprintf (stderr, "%s\r\n", strerror (errno));
+       fprintf (stderr, "%s%s\r\n", prompt ? "\r\n" : "", strerror (errno));
        set_terminal (fd, !RAW);
        close (fd);
        errno = 0;
        return NULL;
      }
+   else if (buf[n] == '\003')
+     {
+       fprintf (stderr, "%s", prompt ? "\r\n" : "");
+       set_terminal (fd, !RAW);
+       close (fd);
+       return NULL;
+     }
    else if (n == bufsiz)
      {
-       fprintf (stderr, "Password too long\r\n");
+       fprintf (stderr, "%sPassword too long\r\n", prompt ? "\r\n" : "");
        set_terminal (fd, !RAW);
        close (fd);
        return NULL;
      }
 
+   buf[n] = '\0';
+   if (length)
+     *length = n;
+   fprintf (stderr, "%s", prompt ? "\r\n" : "");
    set_terminal (fd, !RAW);
    close (fd);
    return buf;
